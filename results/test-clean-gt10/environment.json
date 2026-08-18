@@ -1,0 +1,40 @@
+{
+  "created_unix_s": 1787046410.190188,
+  "python": "3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]",
+  "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+  "torch": "2.9.1+cu129",
+  "torch_cuda": "12.9",
+  "cuda_available": true,
+  "benchmark_args": {
+    "dataset_root": "data/LibriSpeech/test-clean",
+    "min_duration": 10.0,
+    "max_samples": 100,
+    "shuffle": false,
+    "seed": 42,
+    "output_dir": "results/test-clean-gt10",
+    "realtime": true,
+    "warmup_units": 2,
+    "stop_on_speak": true,
+    "model_id": "openbmb/MiniCPM-o-4_5",
+    "model_revision": "main",
+    "dtype": "bfloat16",
+    "attn_implementation": "sdpa",
+    "decode_mode": "sampling",
+    "temperature": 0.7,
+    "top_k": 100,
+    "top_p": 0.8,
+    "listen_prob_scale": 1.0,
+    "system_prompt": "You are in a real-time full-duplex spoken conversation. Listen while the user is speaking and do not interrupt. Respond only after the user has clearly finished speaking."
+  },
+  "target_runpod_image": "runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404",
+  "transformers": "4.51.0",
+  "model_resolved_sha": "503e754207c94da6bb26850b4469f367c9ea3582",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 4090",
+    "total_memory_bytes": 25250627584,
+    "compute_capability": [
+      8,
+      9
+    ]
+  }
+}

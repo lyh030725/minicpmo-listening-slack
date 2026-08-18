@@ -11,15 +11,6 @@ huggingface/
 data/LibriSpeech/
 data/*.tar.gz
 
-# Benchmark outputs
-results/*
-!results/.gitkeep
-
-# Generated manifests
-# Keep committed placeholder only.
-data/manifests/*
-!data/manifests/.gitkeep
-
 # Editor / OS
 .vscode/
 .idea/

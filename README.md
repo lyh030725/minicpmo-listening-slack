@@ -58,8 +58,6 @@ runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404
 Then inside the pod:
 
 ```bash
-git clone <this-private-repo-url>
-cd minicpmo-listening-slack
 bash scripts/setup_runpod.sh
 bash scripts/download_librispeech.sh
 bash scripts/run_test_clean.sh

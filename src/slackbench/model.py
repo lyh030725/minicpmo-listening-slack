@@ -64,7 +64,7 @@ class MiniCPMODuplexRunner:
             init_audio=True,
             # as_duplex() initializes the TTS stack internally in the current official implementation.
             # Keeping this False avoids eagerly initializing it twice during from_pretrained.
-            init_tts=False,
+            init_tts=True,
             low_cpu_mem_usage=True,
         ).eval().cuda()
 
