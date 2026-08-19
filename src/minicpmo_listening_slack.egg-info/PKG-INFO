@@ -1,5 +1,5 @@
 Metadata-Version: 2.4
 Name: minicpmo-listening-slack
-Version: 0.1.0
-Summary: Measure MiniCPM-o 4.5 LISTEN-state real-time compute slack.
+Version: 0.2.0
+Summary: Measure MiniCPM-o 4.5 real-time LISTEN/SPEAK slack and slack text-token capacity.
 Requires-Python: >=3.10

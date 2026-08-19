@@ -1,0 +1,71 @@
+{
+  "created_unix_s": 1787122755.0906534,
+  "python": "3.12.3 (main, Mar 23 2026, 19:04:32) [GCC 13.3.0]",
+  "platform": "Linux-6.8.0-117-generic-x86_64-with-glibc2.39",
+  "torch": "2.9.1+cu129",
+  "torch_cuda": "12.9",
+  "cuda_available": true,
+  "benchmark_args": {
+    "dataset_root": "data/LibriSpeech/test-clean",
+    "min_duration": 10.0,
+    "max_samples": 100,
+    "shuffle": false,
+    "seed": 42,
+    "output_dir": "results/test-clean-slack-token-capacity",
+    "realtime": true,
+    "warmup_units": 2,
+    "trailing_silence_units": 3,
+    "model_id": "openbmb/MiniCPM-o-4_5",
+    "model_revision": "main"
+  },
+  "target_runpod_image": "runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404",
+  "transformers": "4.51.0",
+  "model_resolved_sha": "503e754207c94da6bb26850b4469f367c9ea3582",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 4090",
+    "total_memory_bytes": 25250627584,
+    "compute_capability": [
+      8,
+      9
+    ]
+  },
+  "upstream_defaults": {
+    "duplex_prepare_prompt": "upstream default (prepare called with no prompt override)",
+    "duplex": {
+      "generate_audio": true,
+      "ls_mode": "explicit",
+      "max_new_speak_tokens_per_chunk": 20,
+      "text_repetition_penalty": 1.05,
+      "temperature": 0.7,
+      "top_k": 100,
+      "top_p": 0.8,
+      "text_repetition_window_size": 512,
+      "listen_prob_scale": 1.0,
+      "force_listen_count": 0,
+      "tts_temperature": 0.8,
+      "tts_repetition_penalty": 1.05,
+      "enable_float16": false,
+      "n_timesteps": 10,
+      "chunk_ms": 1000,
+      "first_chunk_ms": 1035,
+      "cnn_redundancy_ms": 20,
+      "sample_rate": 16000,
+      "sliding_window_mode": "off",
+      "basic_window_high_tokens": 8000,
+      "basic_window_low_tokens": 6000,
+      "context_previous_max_tokens": 500,
+      "context_max_units": 24
+    },
+    "text_generation": {
+      "bos_token_id": 151643,
+      "eos_token_id": [
+        151645,
+        151643
+      ],
+      "do_sample": true,
+      "temperature": 0.6,
+      "top_k": 20,
+      "top_p": 0.95
+    }
+  }
+}
