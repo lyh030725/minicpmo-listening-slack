@@ -6,7 +6,7 @@ export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 MAX_SAMPLES="${MAX_SAMPLES:-100}"
-OUTPUT_DIR="${OUTPUT_DIR:-results/test-clean-gt10}"
+OUTPUT_DIR="${OUTPUT_DIR:-results/test-clean-slack-token-capacity}"
 
 python -m slackbench.benchmark \
   --dataset-root data/LibriSpeech/test-clean \
