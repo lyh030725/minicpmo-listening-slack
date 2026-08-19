@@ -3,21 +3,19 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import platform
 import sys
 import time
 from pathlib import Path
 from typing import Any, Iterable
 
-import numpy as np
 import torch
 from tqdm import tqdm
 
-from .dataset import AudioSample, discover_librispeech, full_second_chunks, load_audio
+from .dataset import AudioSample, discover_librispeech, full_second_chunks, load_audio, realtime_chunks
 from .manifest import write_manifest
 from .metrics import summarize
-from .model import DEFAULT_SYSTEM_PROMPT, MiniCPMODuplexRunner, ModelConfig
+from .model import MiniCPMODuplexRunner, ModelConfig
 from .timing import sleep_until, timed_duplex_unit
 
 
@@ -29,6 +27,8 @@ CSV_FIELDS = [
     "unit_idx",
     "audio_start_s",
     "audio_end_s",
+    "input_kind",
+    "valid_audio_samples",
     "state",
     "prefill_success",
     "prefill_reason",
@@ -43,15 +43,26 @@ CSV_FIELDS = [
     "deadline_slack_ms",
     "slack_ratio",
     "deadline_miss",
+    "slack_text_tokens",
+    "slack_generation_ms",
+    "slack_tokens_per_s",
+    "slack_remaining_ms",
+    "slack_mean_token_ms",
+    "slack_max_token_ms",
+    "deadline_miss_after_slack",
     "cost_audio_process_ms",
     "cost_audio_embed_ms",
     "cost_audio_feed_ms",
     "cost_prefill_all_ms",
     "cost_llm_ms",
+    "cost_tts_prep_ms",
+    "cost_tts_ms",
+    "cost_token2wav_ms",
     "cost_generate_all_ms",
     "n_tokens",
     "n_tts_tokens",
     "kv_cache_length",
+    "slack_worker_kv_length",
     "gpu_memory_allocated_mb",
     "gpu_memory_reserved_mb",
     "gpu_peak_memory_allocated_mb",
@@ -63,14 +74,6 @@ def _sec_to_ms(value: Any) -> float:
         return float(value) * 1000.0
     except (TypeError, ValueError):
         return float("nan")
-
-
-def _finite_or_none(value: Any) -> float | None:
-    try:
-        value = float(value)
-    except (TypeError, ValueError):
-        return None
-    return value if math.isfinite(value) else None
 
 
 def collect_environment(args: argparse.Namespace) -> dict[str, Any]:
@@ -133,7 +136,7 @@ def measure_sample(
     runner: MiniCPMODuplexRunner,
     sample: AudioSample,
     realtime: bool,
-    stop_on_speak: bool,
+    trailing_silence_units: int,
     writer: csv.DictWriter,
     row_sink: list[dict[str, Any]],
 ) -> None:
@@ -144,33 +147,57 @@ def measure_sample(
 
     origin = time.perf_counter()
 
-    for unit_idx, chunk in full_second_chunks(audio):
+    for unit_idx, chunk, input_kind, valid_audio_samples in realtime_chunks(
+        audio,
+        trailing_silence_units=trailing_silence_units,
+    ):
         scheduled_start = origin + float(unit_idx)
         if realtime:
             actual_start = sleep_until(scheduled_start)
+            next_deadline = origin + float(unit_idx + 1)
         else:
             actual_start = time.perf_counter()
+            next_deadline = actual_start + 1.0
         start_lag_ms = (actual_start - scheduled_start) * 1000.0 if realtime else 0.0
 
         timed = timed_duplex_unit(
             prefill_fn=lambda: runner.prefill(chunk),
             generate_fn=runner.generate,
         )
-        finish = time.perf_counter()
+        duplex_finish = time.perf_counter()
         prefill = timed.prefill
         generated = timed.generated or {}
 
         total_wall_ms = timed.total_wall_ms
         compute_slack_ms = UNIT_BUDGET_MS - total_wall_ms
-        next_deadline = origin + float(unit_idx + 1)
-        deadline_slack_ms = (next_deadline - finish) * 1000.0 if realtime else float("nan")
+        deadline_slack_ms = (next_deadline - duplex_finish) * 1000.0
 
         if not prefill.get("success", False):
             state = "PREFILL_ERROR"
-            is_listen = False
         else:
-            is_listen = bool(generated.get("is_listen", True))
-            state = "LISTEN" if is_listen else "SPEAK"
+            state = "LISTEN" if bool(generated.get("is_listen", True)) else "SPEAK"
+
+        if state == "PREFILL_ERROR":
+            slack_result = None
+        else:
+            slack_result = runner.generate_slack_tokens_until(next_deadline)
+
+        if slack_result is None:
+            slack_text_tokens = 0
+            slack_generation_ms = 0.0
+            slack_tokens_per_s = 0.0
+            slack_remaining_ms = (next_deadline - time.perf_counter()) * 1000.0
+            slack_mean_token_ms = 0.0
+            slack_max_token_ms = 0.0
+            deadline_miss_after_slack = slack_remaining_ms < 0.0
+        else:
+            slack_text_tokens = slack_result.tokens
+            slack_generation_ms = slack_result.wall_ms
+            slack_tokens_per_s = slack_result.tokens_per_s
+            slack_remaining_ms = slack_result.remaining_ms
+            slack_mean_token_ms = slack_result.mean_token_ms
+            slack_max_token_ms = slack_result.max_token_ms
+            deadline_miss_after_slack = slack_result.deadline_miss
 
         row = {
             "sample_id": sample.sample_id,
@@ -178,6 +205,8 @@ def measure_sample(
             "unit_idx": unit_idx,
             "audio_start_s": float(unit_idx),
             "audio_end_s": float(unit_idx + 1),
+            "input_kind": input_kind,
+            "valid_audio_samples": valid_audio_samples,
             "state": state,
             "prefill_success": bool(prefill.get("success", False)),
             "prefill_reason": prefill.get("reason", ""),
@@ -191,16 +220,27 @@ def measure_sample(
             "compute_slack_ms": compute_slack_ms,
             "deadline_slack_ms": deadline_slack_ms,
             "slack_ratio": compute_slack_ms / UNIT_BUDGET_MS,
-            "deadline_miss": bool(realtime and deadline_slack_ms < 0),
+            "deadline_miss": deadline_slack_ms < 0,
+            "slack_text_tokens": slack_text_tokens,
+            "slack_generation_ms": slack_generation_ms,
+            "slack_tokens_per_s": slack_tokens_per_s,
+            "slack_remaining_ms": slack_remaining_ms,
+            "slack_mean_token_ms": slack_mean_token_ms,
+            "slack_max_token_ms": slack_max_token_ms,
+            "deadline_miss_after_slack": deadline_miss_after_slack,
             "cost_audio_process_ms": _sec_to_ms(prefill.get("cost_audio_process")),
             "cost_audio_embed_ms": _sec_to_ms(prefill.get("cost_audio_embed")),
             "cost_audio_feed_ms": _sec_to_ms(prefill.get("cost_audio_feed")),
             "cost_prefill_all_ms": _sec_to_ms(prefill.get("cost_all")),
             "cost_llm_ms": _sec_to_ms(generated.get("cost_llm")),
+            "cost_tts_prep_ms": _sec_to_ms(generated.get("cost_tts_prep")),
+            "cost_tts_ms": _sec_to_ms(generated.get("cost_tts")),
+            "cost_token2wav_ms": _sec_to_ms(generated.get("cost_token2wav")),
             "cost_generate_all_ms": _sec_to_ms(generated.get("cost_all")),
             "n_tokens": int(generated.get("n_tokens", 0) or 0),
             "n_tts_tokens": int(generated.get("n_tts_tokens", 0) or 0),
             "kv_cache_length": runner.kv_cache_length(),
+            "slack_worker_kv_length": runner.slack_worker_kv_length(),
             "gpu_memory_allocated_mb": torch.cuda.memory_allocated() / 1024**2,
             "gpu_memory_reserved_mb": torch.cuda.memory_reserved() / 1024**2,
             "gpu_peak_memory_allocated_mb": torch.cuda.max_memory_allocated() / 1024**2,
@@ -209,8 +249,6 @@ def measure_sample(
         row_sink.append(row)
 
         if state == "PREFILL_ERROR":
-            break
-        if stop_on_speak and state == "SPEAK":
             break
 
 
@@ -229,11 +267,19 @@ def build_summary(rows: list[dict[str, Any]], realtime: bool) -> dict[str, Any]:
             "units": len(subset),
             "compute_slack_ms": summarize(row["compute_slack_ms"] for row in subset),
             "deadline_slack_ms": summarize(row["deadline_slack_ms"] for row in subset),
+            "slack_text_tokens": summarize(row["slack_text_tokens"] for row in subset),
+            "slack_generation_ms": summarize(row["slack_generation_ms"] for row in subset),
+            "slack_tokens_per_s": summarize(row["slack_tokens_per_s"] for row in subset),
+            "slack_remaining_ms": summarize(row["slack_remaining_ms"] for row in subset),
             "total_wall_ms": summarize(row["total_wall_ms"] for row in subset),
             "total_gpu_ms": summarize(row["total_gpu_ms"] for row in subset),
             "kv_cache_length": summarize(row["kv_cache_length"] for row in subset),
+            "slack_worker_kv_length": summarize(row["slack_worker_kv_length"] for row in subset),
             "deadline_miss_rate": (
-                sum(bool(row["deadline_miss"]) for row in subset) / len(subset) if realtime and subset else None
+                sum(bool(row["deadline_miss"]) for row in subset) / len(subset) if subset else None
+            ),
+            "deadline_miss_after_slack_rate": (
+                sum(bool(row["deadline_miss_after_slack"]) for row in subset) / len(subset) if subset else None
             ),
         }
 
@@ -242,29 +288,33 @@ def build_summary(rows: list[dict[str, Any]], realtime: bool) -> dict[str, Any]:
     speak = _subset(valid, "SPEAK")
     errors = [row for row in rows if row.get("state") == "PREFILL_ERROR"]
     return {
-        "primary_population": "natural LISTEN units (force_listen_count=0)",
+        "primary_population": "natural LISTEN/SPEAK units with upstream MiniCPM-o 4.5 defaults",
+        "slack_token_definition": "completed isolated Qwen3 text-decode steps before the next 1-second deadline",
         "all": stats_for(valid),
         "listen": stats_for(listen),
         "speak": stats_for(speak),
         "prefill_errors": len(errors),
+        "realtime": realtime,
     }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Measure MiniCPM-o 4.5 natural LISTEN-state slack.")
+    parser = argparse.ArgumentParser(
+        description="Measure MiniCPM-o 4.5 LISTEN/SPEAK slack and text-token capacity using upstream defaults."
+    )
     parser.add_argument("--dataset-root", type=Path, default=Path("data/LibriSpeech/test-clean"))
     parser.add_argument("--min-duration", type=float, default=10.0, help="Strict lower bound in seconds.")
     parser.add_argument("--max-samples", type=int, default=100, help="0 means all qualifying samples.")
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--output-dir", type=Path, default=Path("results/test-clean-gt10"))
+    parser.add_argument("--output-dir", type=Path, default=Path("results/test-clean-slack-token-capacity"))
     parser.add_argument("--realtime", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--warmup-units", type=int, default=2)
     parser.add_argument(
-        "--stop-on-speak",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Stop a sample after its first SPEAK unit so later units are not contaminated by model output.",
+        "--trailing-silence-units",
+        type=int,
+        default=3,
+        help="1-second silence units appended after the complete utterance to observe natural SPEAK behavior.",
     )
 
     parser.add_argument("--model-id", default="openbmb/MiniCPM-o-4_5")
@@ -273,14 +323,6 @@ def parse_args() -> argparse.Namespace:
         default="main",
         help="Hugging Face model revision. The resolved commit SHA is saved in environment.json.",
     )
-    parser.add_argument("--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32"])
-    parser.add_argument("--attn-implementation", default="sdpa")
-    parser.add_argument("--decode-mode", default="sampling", choices=["sampling", "greedy"])
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--top-k", type=int, default=100)
-    parser.add_argument("--top-p", type=float, default=0.8)
-    parser.add_argument("--listen-prob-scale", type=float, default=1.0)
-    parser.add_argument("--system-prompt", default=DEFAULT_SYSTEM_PROMPT)
     return parser.parse_args()
 
 
@@ -302,28 +344,23 @@ def main() -> None:
         )
 
     write_manifest(samples, args.output_dir / "manifest.csv")
-    with (args.output_dir / "environment.json").open("w", encoding="utf-8") as f:
-        json.dump(collect_environment(args), f, indent=2, ensure_ascii=False)
 
     print(f"[benchmark] selected_samples={len(samples)}")
-    print(f"[benchmark] realtime={args.realtime} stop_on_speak={args.stop_on_speak}")
-    print(f"[benchmark] loading {args.model_id}")
+    print(f"[benchmark] realtime={args.realtime} trailing_silence_units={args.trailing_silence_units}")
+    print(f"[benchmark] loading {args.model_id} with upstream generation/duplex defaults")
 
     runner = MiniCPMODuplexRunner(
         ModelConfig(
             model_id=args.model_id,
             revision=args.model_revision,
-            dtype=args.dtype,
-            attn_implementation=args.attn_implementation,
-            decode_mode=args.decode_mode,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            top_p=args.top_p,
-            listen_prob_scale=args.listen_prob_scale,
             seed=args.seed,
-            system_prompt=args.system_prompt,
         )
     )
+
+    environment = collect_environment(args)
+    environment["upstream_defaults"] = runner.upstream_defaults()
+    with (args.output_dir / "environment.json").open("w", encoding="utf-8") as f:
+        json.dump(environment, f, indent=2, ensure_ascii=False)
 
     warmup(runner, samples[0], args.warmup_units)
 
@@ -337,7 +374,7 @@ def main() -> None:
                 runner,
                 sample,
                 realtime=args.realtime,
-                stop_on_speak=args.stop_on_speak,
+                trailing_silence_units=args.trailing_silence_units,
                 writer=writer,
                 row_sink=rows,
             )
@@ -346,12 +383,22 @@ def main() -> None:
     summary = build_summary(rows, realtime=args.realtime)
     summary["selected_samples"] = len(samples)
     summary["completed_rows"] = len(rows)
+    summary["trailing_silence_units"] = args.trailing_silence_units
     with (args.output_dir / "summary.json").open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False, allow_nan=False)
 
-    listen_stats = summary["listen"]["deadline_slack_ms" if args.realtime else "compute_slack_ms"]
-    print(f"[benchmark] rows={len(rows)} listen_units={summary['listen']['units']} speak_units={summary['speak']['units']}")
-    print(f"[benchmark] LISTEN slack stats: {json.dumps(listen_stats, ensure_ascii=False)}")
+    print(
+        f"[benchmark] rows={len(rows)} listen_units={summary['listen']['units']} "
+        f"speak_units={summary['speak']['units']}"
+    )
+    print(
+        "[benchmark] LISTEN slack tokens: "
+        + json.dumps(summary["listen"]["slack_text_tokens"], ensure_ascii=False)
+    )
+    print(
+        "[benchmark] SPEAK slack tokens: "
+        + json.dumps(summary["speak"]["slack_text_tokens"], ensure_ascii=False)
+    )
     print(f"[benchmark] wrote {units_csv}")
 
 
