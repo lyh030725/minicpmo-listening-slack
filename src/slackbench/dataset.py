@@ -84,7 +84,7 @@ def full_second_chunks(
     audio: np.ndarray,
     sample_rate: int = TARGET_SAMPLE_RATE,
 ) -> Iterator[tuple[int, np.ndarray]]:
-    """Yield only complete 1-second chunks; trailing partial audio is intentionally dropped."""
+    """Yield only complete 1-second chunks; kept for the original benchmark protocol."""
     audio = np.asarray(audio, dtype=np.float32)
     chunk_size = int(sample_rate)
     n_complete = len(audio) // chunk_size
@@ -92,3 +92,44 @@ def full_second_chunks(
         start = unit_idx * chunk_size
         end = start + chunk_size
         yield unit_idx, np.ascontiguousarray(audio[start:end], dtype=np.float32)
+
+
+def realtime_chunks(
+    audio: np.ndarray,
+    trailing_silence_units: int = 3,
+    sample_rate: int = TARGET_SAMPLE_RATE,
+) -> Iterator[tuple[int, np.ndarray, str, int]]:
+    """Yield 1-second real-time units using all speech, then explicit trailing silence.
+
+    The final partial speech chunk is zero-padded instead of dropped. This preserves the
+    end of the utterance, which is necessary for natural LISTEN -> SPEAK transitions.
+
+    Yields ``(unit_idx, chunk, input_kind, valid_audio_samples)`` where ``input_kind`` is
+    ``AUDIO``, ``AUDIO_PADDED``, or ``SILENCE``.
+    """
+    if trailing_silence_units < 0:
+        raise ValueError("trailing_silence_units must be >= 0")
+
+    audio = np.asarray(audio, dtype=np.float32)
+    chunk_size = int(sample_rate)
+    if chunk_size <= 0:
+        raise ValueError("sample_rate must be positive")
+
+    n_audio_units = int(math.ceil(len(audio) / chunk_size)) if len(audio) else 0
+    for unit_idx in range(n_audio_units):
+        start = unit_idx * chunk_size
+        end = min(start + chunk_size, len(audio))
+        valid = max(0, end - start)
+        if valid == chunk_size:
+            chunk = np.ascontiguousarray(audio[start:end], dtype=np.float32)
+            kind = "AUDIO"
+        else:
+            chunk = np.zeros(chunk_size, dtype=np.float32)
+            if valid:
+                chunk[:valid] = audio[start:end]
+            kind = "AUDIO_PADDED"
+        yield unit_idx, chunk, kind, valid
+
+    for silence_idx in range(trailing_silence_units):
+        unit_idx = n_audio_units + silence_idx
+        yield unit_idx, np.zeros(chunk_size, dtype=np.float32), "SILENCE", 0
