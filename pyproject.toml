@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minicpmo-listening-slack"
-version = "0.1.0"
-description = "Measure MiniCPM-o 4.5 LISTEN-state real-time compute slack."
+version = "0.2.0"
+description = "Measure MiniCPM-o 4.5 real-time LISTEN/SPEAK slack and slack text-token capacity."
 requires-python = ">=3.10"
 
 [tool.setuptools]
