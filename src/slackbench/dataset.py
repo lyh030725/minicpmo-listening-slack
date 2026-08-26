@@ -27,12 +27,12 @@ class AudioSample:
 
 def discover_librispeech(
     root: Path,
-    min_duration_s: float = 10.0,
+    min_duration_s: float = 0.0,
     max_samples: int = 0,
     shuffle: bool = False,
     seed: int = 42,
 ) -> list[AudioSample]:
-    """Discover LibriSpeech FLAC files with duration strictly greater than min_duration_s."""
+    """Discover LibriSpeech FLAC files, optionally filtering by minimum duration."""
     root = Path(root)
     if not root.exists():
         raise FileNotFoundError(f"Dataset root does not exist: {root}")
