@@ -85,7 +85,7 @@ def collect_environment(args: argparse.Namespace) -> dict[str, Any]:
         "torch_cuda": str(torch.version.cuda),
         "cuda_available": torch.cuda.is_available(),
         "benchmark_args": vars(args).copy(),
-        "target_runpod_image": "runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404",
+        "target_runpod_image": "runpod/pytorch:1.0.7-cu1281-torch280-ubuntu2404",
     }
     for key, value in list(env["benchmark_args"].items()):
         if isinstance(value, Path):
