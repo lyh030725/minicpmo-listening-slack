@@ -37,9 +37,14 @@ def main() -> None:
                     "gpu_capability": list(torch.cuda.get_device_capability(0)),
                 }
             )
-        if not str(torch.__version__).startswith("2.9.1"):
+        if not str(torch.__version__).startswith("2.8.0"):
             print(
-                f"[warning] Expected RunPod image PyTorch 2.9.1, found {torch.__version__}.",
+                f"[warning] Expected RunPod image PyTorch 2.8.0, found {torch.__version__}.",
+                file=sys.stderr,
+            )
+        if str(torch.version.cuda) != "12.8":
+            print(
+                f"[warning] Expected CUDA runtime 12.8, found {torch.version.cuda}.",
                 file=sys.stderr,
             )
     except Exception as exc:  # pragma: no cover - environment diagnostic
@@ -54,11 +59,6 @@ def main() -> None:
                 info[f"{package}_error"] = repr(exc)
 
     print(json.dumps(info, indent=2, ensure_ascii=False))
-    if info.get("torch") and str(info["torch"]).startswith("2.9.1"):
-        print(
-            "[note] MiniCPM-o upstream currently documents the Transformers path as tested "
-            "through torch<=2.8.0; this repository intentionally keeps RunPod torch 2.9.1."
-        )
 
 
 if __name__ == "__main__":
