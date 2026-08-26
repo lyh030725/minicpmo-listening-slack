@@ -2,7 +2,7 @@
 
 Measure both **LISTEN** and **SPEAK** real-time compute slack in MiniCPM-o 4.5, then directly measure how many additional text-decoding tokens fit inside that slack before the next 1-second audio deadline.
 
-The benchmark uses LibriSpeech ASR `test-clean` utterances longer than 10 seconds. Audio is streamed to the official MiniCPM-o duplex API in 1-second units. The last partial speech unit is zero-padded instead of dropped, and three 1-second silence units are appended by default so the model gets a natural opportunity to transition from LISTEN to SPEAK.
+The benchmark uses the **entire LibriSpeech ASR `test-clean` split by default**, with no minimum-duration filter and no sample-count cap. Audio is streamed to the official MiniCPM-o duplex API in 1-second units. The last partial speech unit is zero-padded instead of dropped, and three 1-second silence units are appended by default so the model gets a natural opportunity to transition from LISTEN to SPEAK.
 
 ## Target RunPod environment
 
@@ -12,13 +12,21 @@ runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404
 
 The setup script intentionally does not reinstall the base image's PyTorch/CUDA stack.
 
-## Upstream-default model behavior
+## Listening-focused duplex behavior
 
-This benchmark deliberately removes the previous prompt and duplex-decoding overrides.
-
-The measured duplex path now does the following:
+The benchmark keeps MiniCPM-o 4.5's upstream duplex generation parameters, but supplies a custom system prompt that strongly favors listening.
 
 ```python
+LISTENING_SYSTEM_PROMPT = (
+    "Streaming Omni Conversation. "
+    "You are a patient listener in a real-time full-duplex conversation. "
+    "Prioritize listening over speaking. "
+    "While the user is speaking or may continue speaking, stay silent and keep listening. "
+    "Do not interrupt, backchannel, acknowledge, or respond during the user's utterance. "
+    "Only begin speaking after you are confident that the user has clearly finished and a response is needed. "
+    "If there is any uncertainty about whether the user has finished, continue listening."
+)
+
 model = AutoModel.from_pretrained(
     "openbmb/MiniCPM-o-4_5",
     trust_remote_code=True,
@@ -27,22 +35,39 @@ model = AutoModel.from_pretrained(
 model = model.eval().cuda()
 
 duplex = model.as_duplex()
-duplex.prepare()
+duplex.prepare(prefix_system_prompt=LISTENING_SYSTEM_PROMPT)
 duplex.streaming_prefill(audio_waveform=chunk)
 duplex.streaming_generate()
 ```
 
 In particular:
 
-- No custom system prompt is supplied. `duplex.prepare()` therefore uses MiniCPM-o's own default duplex prompt.
-- No LISTEN/SPEAK sampling parameters are supplied to `streaming_generate()`.
-- No `generate_audio=False`, forced-listen, or sliding-window override is supplied to `as_duplex()`.
+- The system prompt explicitly asks the model to keep listening while the user is speaking or may continue speaking.
+- The prompt asks the model not to interrupt, backchannel, acknowledge, or answer during the utterance.
+- The model is asked to speak only after it is confident that the user has clearly finished.
+- No LISTEN/SPEAK sampling parameters are overridden in `streaming_generate()`.
+- No `listen_prob_scale`, forced-listen, or other LISTEN/SPEAK hyperparameter is changed; the listening bias comes only from the system prompt.
+- No `generate_audio=False` or sliding-window override is supplied to `as_duplex()`.
 - `torch_dtype="auto"` only asks Transformers to honor the dtype stored in the model config; it does not change generation behavior.
 - The requested model revision and its resolved commit SHA are saved in `environment.json`.
 
 ### Default-audio caveat
 
-`as_duplex()` enables speech generation by default. However, the upstream Token2Wav path is initialized from a prompt/reference WAV. This benchmark intentionally does **not** invent a reference voice or prompt WAV, because doing so would no longer be a default setup. As a result, SPEAK units still include the model's default text/TTS-token generation path, while the waveform/Token2Wav portion may remain inactive unless upstream itself provides an initialized prompt audio path. `cost_tts_ms`, `cost_token2wav_ms`, and `n_tts_tokens` are retained so this is visible in the results.
+`as_duplex()` enables speech generation by default. However, the upstream Token2Wav path is initialized from a prompt/reference WAV. This benchmark intentionally does **not** invent a reference voice or prompt WAV. As a result, SPEAK units still include the model's default text/TTS-token generation path, while the waveform/Token2Wav portion may remain inactive unless upstream itself provides an initialized prompt audio path. `cost_tts_ms`, `cost_token2wav_ms`, and `n_tts_tokens` are retained so this is visible in the results.
+
+## Dataset protocol
+
+The default dataset settings are:
+
+```text
+dataset: LibriSpeech test-clean
+minimum duration: 0 seconds
+maximum samples: 0 (all samples)
+```
+
+Therefore the normal benchmark run processes every non-empty FLAC utterance under `data/LibriSpeech/test-clean`.
+
+The CLI still exposes `--min-duration` and `--max-samples` for optional smaller diagnostic runs, but both default to zero.
 
 ## What is measured
 
@@ -50,7 +75,7 @@ For every 1-second real-time unit:
 
 1. Wait for the unit's scheduled arrival time.
 2. Run the normal `streaming_prefill()` + `streaming_generate()` duplex work.
-3. Record whether MiniCPM-o naturally chose LISTEN or SPEAK.
+3. Record whether MiniCPM-o naturally chose LISTEN or SPEAK under the listening-focused system prompt.
 4. Compute the time remaining until the next 1-second deadline.
 5. Use that remaining time for isolated autoregressive text decoding with the **same MiniCPM-o language-model weights**.
 6. Stop before the next audio deadline and count only text tokens whose GPU forward pass actually completed in time.
@@ -72,7 +97,7 @@ deadline_slack_ms = next_audio_deadline - duplex_finish_time
 
 A negative `deadline_slack_ms` means the normal duplex path already missed its deadline.
 
-The new capacity metric is:
+The capacity metric is:
 
 ```text
 slack_text_tokens = number of extra text-decode tokens completed before next_audio_deadline
@@ -108,15 +133,13 @@ A single calibration decode is performed outside the timed audio loop. During ea
 
 ## Speech-end protocol
 
-The old benchmark dropped the final partial second of every utterance and stopped a sample at the first SPEAK unit. That made natural SPEAK observations rare.
-
-The new default protocol is:
+The benchmark uses all speech in each utterance:
 
 ```text
 full speech units -> zero-padded final partial unit -> 3 x 1-second silence units
 ```
 
-and it does **not** stop after SPEAK. Change only the number of appended silence units with:
+It does **not** stop after SPEAK. Change only the number of appended silence units with:
 
 ```bash
 --trailing-silence-units N
@@ -132,21 +155,25 @@ bash scripts/download_librispeech.sh
 bash scripts/run_test_clean.sh
 ```
 
-By default, the benchmark selects the first 100 `test-clean` utterances with duration strictly greater than 10 seconds and writes to:
-
-```text
-results/test-clean-slack-token-capacity/
-```
-
-Run every qualifying utterance with:
+By default, `run_test_clean.sh` uses:
 
 ```bash
-python -m slackbench.benchmark \
-  --dataset-root data/LibriSpeech/test-clean \
-  --min-duration 10 \
-  --max-samples 0 \
-  --realtime \
-  --output-dir results/test-clean-slack-token-capacity-all
+MIN_DURATION=0
+MAX_SAMPLES=0
+```
+
+so the complete `test-clean` split is used.
+
+For a smaller diagnostic run, override either variable explicitly, for example:
+
+```bash
+MAX_SAMPLES=100 bash scripts/run_test_clean.sh
+```
+
+or:
+
+```bash
+MIN_DURATION=10 MAX_SAMPLES=100 bash scripts/run_test_clean.sh
 ```
 
 ## Outputs
@@ -171,7 +198,7 @@ Important `units.csv` columns include:
 - duplex timing: `prefill_host_ms`, `generate_host_ms`, `total_wall_ms`
 - GPU timing: `prefill_gpu_ms`, `generate_gpu_ms`, `total_gpu_ms`
 - original slack: `compute_slack_ms`, `deadline_slack_ms`, `deadline_miss`
-- new capacity: `slack_text_tokens`, `slack_generation_ms`, `slack_tokens_per_s`, `slack_remaining_ms`
+- capacity: `slack_text_tokens`, `slack_generation_ms`, `slack_tokens_per_s`, `slack_remaining_ms`
 - deadline safety: `deadline_miss_after_slack`
 - latency diagnostics: `slack_mean_token_ms`, `slack_max_token_ms`
 - duplex internals: `n_tokens`, `n_tts_tokens`, `cost_llm_ms`, `cost_tts_ms`, `cost_token2wav_ms`
@@ -179,6 +206,8 @@ Important `units.csv` columns include:
 - CUDA memory usage
 
 `summary.json` reports the slack/token statistics separately for `all`, `listen`, and `speak` populations.
+
+`environment.json` records the benchmark arguments, resolved model revision, and the exact listening-focused system prompt used for the run.
 
 ## Input kinds
 
@@ -192,7 +221,7 @@ Important `units.csv` columns include:
 
 Two duplex units are run as an unrecorded warm-up by default. Change this with `--warmup-units`.
 
-The benchmark seed defaults to 42 and is used only for deterministic benchmark/model RNG setup. Model generation parameters themselves come from upstream defaults.
+The benchmark seed defaults to 42 and is used only for deterministic benchmark/model RNG setup. Model generation parameters themselves come from upstream defaults apart from the custom listening-focused system prompt.
 
 For a final reproducible experiment, pin an exact upstream revision:
 
@@ -206,9 +235,9 @@ For a final reproducible experiment, pin an exact upstream revision:
 src/slackbench/
 ├── benchmark.py   # real-time duplex + slack-capacity loop
 ├── dataset.py     # LibriSpeech discovery and real-time chunk protocol
-├── manifest.py    # duration-filtered manifest generation
+├── manifest.py    # manifest generation
 ├── metrics.py     # summary statistics
-├── model.py       # upstream-default duplex runner + isolated text worker
+├── model.py       # listening-focused duplex runner + isolated text worker
 └── timing.py      # synchronized wall/CUDA timers
 scripts/
 ├── setup_runpod.sh
