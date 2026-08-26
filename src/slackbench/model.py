@@ -10,6 +10,17 @@ import torch
 from transformers import AutoModel
 
 
+LISTENING_SYSTEM_PROMPT = (
+    "Streaming Omni Conversation. "
+    "You are a patient listener in a real-time full-duplex conversation. "
+    "Prioritize listening over speaking. "
+    "While the user is speaking or may continue speaking, stay silent and keep listening. "
+    "Do not interrupt, backchannel, acknowledge, or respond during the user's utterance. "
+    "Only begin speaking after you are confident that the user has clearly finished and a response is needed. "
+    "If there is any uncertainty about whether the user has finished, continue listening."
+)
+
+
 @dataclass
 class ModelConfig:
     model_id: str = "openbmb/MiniCPM-o-4_5"
@@ -47,7 +58,8 @@ class MiniCPMODuplexRunner:
         ).eval().cuda()
 
         # No duplex kwargs: generate_audio, listen/speak decoding, TTS, windowing, etc.
-        # all come from MiniCPM-o 4.5's upstream defaults.
+        # all come from MiniCPM-o 4.5's upstream defaults. Listening behavior is encouraged
+        # only through the system prompt passed to prepare().
         self.duplex = self.model.as_duplex()
 
         self._slack_cache = None
@@ -64,9 +76,7 @@ class MiniCPMODuplexRunner:
 
     def prepare_sample(self) -> str:
         self._seed_all(self.config.seed)
-        # No custom prompt. Upstream prepare() currently defaults to
-        # "Streaming Omni Conversation."
-        prompt = self.duplex.prepare()
+        prompt = self.duplex.prepare(prefix_system_prompt=LISTENING_SYSTEM_PROMPT)
         self._reset_slack_text_worker()
         return prompt
 
@@ -233,7 +243,8 @@ class MiniCPMODuplexRunner:
         duplex_defaults = dict(getattr(self.duplex, "_default_duplex_params", {}))
         generation_cfg = self._generation_config()
         return {
-            "duplex_prepare_prompt": "upstream default (prepare called with no prompt override)",
+            "duplex_prepare_prompt": LISTENING_SYSTEM_PROMPT,
+            "duplex_prepare_prompt_is_custom": True,
             "duplex": duplex_defaults,
             "text_generation": {
                 "bos_token_id": getattr(generation_cfg, "bos_token_id", None),
