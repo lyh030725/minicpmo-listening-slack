@@ -288,7 +288,7 @@ def build_summary(rows: list[dict[str, Any]], realtime: bool) -> dict[str, Any]:
     speak = _subset(valid, "SPEAK")
     errors = [row for row in rows if row.get("state") == "PREFILL_ERROR"]
     return {
-        "primary_population": "natural LISTEN/SPEAK units with upstream MiniCPM-o 4.5 defaults",
+        "primary_population": "natural LISTEN/SPEAK units with a listening-focused system prompt and upstream duplex generation defaults",
         "slack_token_definition": "completed isolated Qwen3 text-decode steps before the next 1-second deadline",
         "all": stats_for(valid),
         "listen": stats_for(listen),
@@ -300,11 +300,21 @@ def build_summary(rows: list[dict[str, Any]], realtime: bool) -> dict[str, Any]:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Measure MiniCPM-o 4.5 LISTEN/SPEAK slack and text-token capacity using upstream defaults."
+        description="Measure MiniCPM-o 4.5 LISTEN/SPEAK slack and text-token capacity over LibriSpeech test-clean."
     )
     parser.add_argument("--dataset-root", type=Path, default=Path("data/LibriSpeech/test-clean"))
-    parser.add_argument("--min-duration", type=float, default=10.0, help="Strict lower bound in seconds.")
-    parser.add_argument("--max-samples", type=int, default=100, help="0 means all qualifying samples.")
+    parser.add_argument(
+        "--min-duration",
+        type=float,
+        default=0.0,
+        help="Strict lower bound in seconds. Default 0 uses every non-empty utterance.",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=0,
+        help="Maximum number of samples. 0 means all samples.",
+    )
     parser.add_argument("--shuffle", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output-dir", type=Path, default=Path("results/test-clean-slack-token-capacity"))
@@ -339,7 +349,7 @@ def main() -> None:
     )
     if not samples:
         raise SystemExit(
-            f"No FLAC samples found with duration > {args.min_duration}s under {args.dataset_root}. "
+            f"No FLAC samples found under {args.dataset_root} with min_duration={args.min_duration}. "
             "Run scripts/download_librispeech.sh first."
         )
 
@@ -347,7 +357,7 @@ def main() -> None:
 
     print(f"[benchmark] selected_samples={len(samples)}")
     print(f"[benchmark] realtime={args.realtime} trailing_silence_units={args.trailing_silence_units}")
-    print(f"[benchmark] loading {args.model_id} with upstream generation/duplex defaults")
+    print(f"[benchmark] loading {args.model_id} with listening-focused system prompt")
 
     runner = MiniCPMODuplexRunner(
         ModelConfig(
@@ -358,7 +368,7 @@ def main() -> None:
     )
 
     environment = collect_environment(args)
-    environment["upstream_defaults"] = runner.upstream_defaults()
+    environment["model_configuration"] = runner.upstream_defaults()
     with (args.output_dir / "environment.json").open("w", encoding="utf-8") as f:
         json.dump(environment, f, indent=2, ensure_ascii=False)
 
