@@ -7,10 +7,18 @@ The benchmark uses the **entire LibriSpeech ASR `test-clean` split by default**,
 ## Target RunPod environment
 
 ```text
-runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404
+runpod/pytorch:1.0.7-cu1281-torch280-ubuntu2404
 ```
 
-The setup script intentionally does not reinstall the base image's PyTorch/CUDA stack.
+Target stack:
+
+```text
+PyTorch: 2.8.0
+CUDA runtime: 12.8
+Ubuntu: 24.04
+```
+
+The setup script intentionally preserves the base image's PyTorch/CUDA stack and verifies that dependency installation does not replace it.
 
 ## Listening-focused duplex behavior
 
@@ -148,6 +156,14 @@ It does **not** stop after SPEAK. Change only the number of appended silence uni
 This is an input-protocol option, not a model hyperparameter.
 
 ## Quick start on RunPod
+
+Create the Pod using:
+
+```text
+runpod/pytorch:1.0.7-cu1281-torch280-ubuntu2404
+```
+
+Then run:
 
 ```bash
 bash scripts/setup_runpod.sh
