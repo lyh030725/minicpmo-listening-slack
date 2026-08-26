@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-TARGET_IMAGE="runpod/pytorch:1.0.7-cu1290-torch291-ubuntu2404"
+TARGET_IMAGE="runpod/pytorch:1.0.7-cu1281-torch280-ubuntu2404"
 
 echo "[setup] Target RunPod image: ${TARGET_IMAGE}"
 echo "[setup] Preserving the image-provided PyTorch/CUDA stack."
@@ -37,8 +37,10 @@ python scripts/check_env.py
 
 python - <<'VERIFY_PY'
 import torch
-if not str(torch.__version__).startswith("2.9.1"):
-    raise SystemExit(f"[setup] ERROR: PyTorch changed from the requested 2.9.1 stack: {torch.__version__}")
+if not str(torch.__version__).startswith("2.8.0"):
+    raise SystemExit(f"[setup] ERROR: PyTorch changed from the requested 2.8.0 stack: {torch.__version__}")
+if str(torch.version.cuda) != "12.8":
+    raise SystemExit(f"[setup] ERROR: Expected CUDA runtime 12.8, found {torch.version.cuda}")
 print(f"[setup] PyTorch preserved: {torch.__version__}; CUDA runtime reported by torch: {torch.version.cuda}")
 VERIFY_PY
 
