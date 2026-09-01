@@ -14,7 +14,26 @@ VALID_STATES = ("LISTEN", "SPEAK")
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument(
+        "--pdf-output",
+        type=Path,
+        help="Optional path for an example-style two-panel PDF summary.",
+    )
+    parser.add_argument(
+        "--pdf-only",
+        action="store_true",
+        help="Write the PDF summary without regenerating the legacy PNG plots.",
+    )
+    parser.add_argument(
+        "--pdf-layout",
+        choices=("vertical", "horizontal"),
+        default="vertical",
+        help="Arrange the two PDF panels vertically or horizontally.",
+    )
     args = parser.parse_args()
+
+    if args.pdf_only and args.pdf_output is None:
+        parser.error("--pdf-only requires --pdf-output")
 
     csv_path = args.run_dir / "units.csv"
     if not csv_path.exists():
@@ -25,6 +44,63 @@ def main() -> None:
     if valid.empty:
         print("[plot] No LISTEN/SPEAK rows; nothing to plot.")
         return
+
+    if args.pdf_output is not None:
+        args.pdf_output.parent.mkdir(parents=True, exist_ok=True)
+        if args.pdf_layout == "horizontal":
+            fig, axes = plt.subplots(1, 2, figsize=(12.6, 4.05))
+            # Match the apparent marker size of the narrower vertical panels.
+            marker_size = 12
+            label_fontsize = 15
+            tick_fontsize = 13
+            legend_fontsize = 14
+        else:
+            fig, axes = plt.subplots(2, 1, figsize=(5.0, 6.5))
+            marker_size = 7
+            label_fontsize = None
+            tick_fontsize = None
+            legend_fontsize = None
+        colors = {"LISTEN": "tab:blue", "SPEAK": "tab:orange"}
+
+        for state in VALID_STATES:
+            subset = valid[valid["state"] == state]
+            if subset.empty:
+                continue
+            axes[0].scatter(
+                subset["slack_worker_kv_length"],
+                subset["compute_slack_ms"],
+                s=marker_size,
+                alpha=0.72,
+                color=colors[state],
+                edgecolors="none",
+                label=state,
+            )
+            axes[1].scatter(
+                subset["compute_slack_ms"],
+                subset["slack_text_tokens"],
+                s=marker_size,
+                alpha=0.72,
+                color=colors[state],
+                edgecolors="none",
+                label=state,
+            )
+
+        axes[0].set_xlabel("KV Cache Length", fontsize=label_fontsize)
+        axes[0].set_ylabel("Slack (ms)", fontsize=label_fontsize)
+        axes[1].set_xlabel("Slack (ms)", fontsize=label_fontsize)
+        axes[1].set_ylabel("Generated Text Tokens", fontsize=label_fontsize)
+        for ax in axes:
+            ax.grid(alpha=0.18, linewidth=0.6)
+            ax.tick_params(labelsize=tick_fontsize)
+            ax.legend(loc="lower right", framealpha=0.9, fontsize=legend_fontsize)
+
+        fig.tight_layout(pad=1.0, w_pad=2.0, h_pad=2.0)
+        fig.savefig(args.pdf_output, format="pdf", metadata={"Title": "MiniCPM-o Test Results"})
+        plt.close(fig)
+        print(f"[plot] Wrote PDF summary to {args.pdf_output}")
+
+        if args.pdf_only:
+            return
 
     fig, ax = plt.subplots(figsize=(7, 4.5))
     for state in VALID_STATES:
